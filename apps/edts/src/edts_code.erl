@@ -579,12 +579,13 @@ get_compile_outdir(File, Opts) ->
   end.
 
 filename_to_outdir(File) ->
-  DirName = filename:dirname(File),
-  EbinDir = filename:join([DirName, "..", "ebin"]),
-  case filelib:is_dir(EbinDir) of
-    true  -> EbinDir;
-    false -> DirName
-  end.
+  find_rebar3_beam_dir(File).
+  %% DirName = filename:dirname(File),
+  %% EbinDir = filename:join([DirName, "..", "ebin"]),
+  %% case filelib:is_dir(EbinDir) of
+  %%   true  -> EbinDir;
+  %%   false -> DirName
+  %% end.
 
 
 %%------------------------------------------------------------------------------
@@ -807,6 +808,86 @@ extract_compile_opt_p({d,               _, _}) -> true;
 extract_compile_opt_p(export_all)              -> true;
 extract_compile_opt_p({no_auto_import,  _})    -> true;
 extract_compile_opt_p(_)                       -> false.
+
+%%%-----------------------------------------------------------------------------
+%%% Code to try to mimic the logic in rebar3 as to where beam files are saved
+%%%-----------------------------------------------------------------------------
+find_rebar3_beam_dir(ErlFilePath) ->
+  Clean = cleanpath(ErlFilePath),
+  SrcDir = filename:dirname(Clean),
+  Parts = filename:split(SrcDir),
+  Location = find_rebar3_beam_dir_(lists:reverse(Parts), undefined),
+  error_logger:error_msg("Guessed at ~p for ~p", [Location, ErlFilePath]),
+  Location.
+
+find_rebar3_beam_dir_(Parts = [_AppName, "lib", "default", "_build" | _Root], _MaybeAppName) ->
+  parts_to_path(["ebin" | Parts]);
+
+
+find_rebar3_beam_dir_(Parts = ["src" | T], MaybeAppName) ->
+  error_logger:error_msg("In src dir ~p ", [Parts]),
+  BasePath = parts_to_path(T),
+
+  %% Is there an ebin directory that is a peer of src?
+  PotentialPath = parts_to_path(["ebin" | T]),
+  case filelib:is_dir(PotentialPath) of
+    true -> PotentialPath;
+    false ->
+      %% Is there an app.src file?
+      case filelib:wildcard(BasePath ++ "/src/*.app.src") of
+        [AppFile] ->
+          %% We have found the name of our OTP application
+          find_rebar3_beam_dir_(T, appsrc_filename_to_app_name(AppFile));
+        _ ->
+          find_rebar3_beam_dir_(T, MaybeAppName)
+      end
+  end;
+
+
+find_rebar3_beam_dir_([_ | T], undefined) ->
+  find_rebar3_beam_dir_(T, undefined);
+
+find_rebar3_beam_dir_(Parts = [_ | T], AppName) ->
+  PotentialPath = parts_to_path(["ebin", AppName, "lib", "default", "_build" | Parts]),
+  case filelib:is_dir(PotentialPath) of
+    true -> PotentialPath;
+    false -> find_rebar3_beam_dir_(T, AppName)
+  end;
+
+find_rebar3_beam_dir_([], _MaybeAppName) ->
+  io:format("_MaybeAppName ~p~n", [_MaybeAppName]),
+  "/tmp".
+
+
+
+appsrc_filename_to_app_name(Filename) ->
+  StillWithDotApp = erl_filename_to_module_name(Filename),
+  filename:rootname(StillWithDotApp).
+
+
+erl_filename_to_module_name(Filename) ->
+  filename:rootname(filename:basename(Filename)).
+
+parts_to_path(Parts) ->
+  lists:flatten(lists:join("/", lists:reverse(Parts))).
+
+cleanpath(Path) ->
+  cleanpath(filename:split(Path), []).
+
+cleanpath([], Acc) ->
+  filename:join(lists:reverse(Acc));
+
+cleanpath([Dot | T], Acc) when Dot == "."; Dot == <<".">> ->
+  cleanpath(T, Acc);
+
+cleanpath([DotDot | T], Acc=[_]) when DotDot == ".."; DotDot == <<"..">> ->
+  cleanpath(T, Acc);
+
+cleanpath([DotDot | T], [_|Acc]) when DotDot == ".."; DotDot == <<"..">> ->
+  cleanpath(T, Acc);
+
+cleanpath([Segment | T], Acc) ->
+  cleanpath(T, [Segment | Acc]).
 
 %%%_* Unit tests ===============================================================
 
